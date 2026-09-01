@@ -1,0 +1,19 @@
+hub_id, Province ,sorting_center,active
+H-500, Gauteng ,Johannesburg Central,Y
+h-501,Western Cape,Cape Town Port,yes
+H-502 ,gauteng,Pretoria North,0
+H-503,KwaZulu-Natal,Durban Harbour,Y
+H-504,Gauteng,Johannesburg Central,true
+H-505,Western Cape ,Cape Town  Port,TRUE
+H-506,Kwa-Zulu Natal,Durban Harbour,1
+H-507,Free State,Bloemfontein Hub,N
+H-508,,Pretoria North,yes
+H-509,eastern cape,Port Elizabeth Hub,0
+H-510,Gauteng,johannesburg central,FALSE
+H-511,Limpopo,Polokwane Hub,unknown
+h-512,western cape,Cape Town Port,Y
+H-513,North West,Rustenburg Hub,no
+H-514,Mpumalanga ,Nelspruit Hub,1
+H-515,Gauteng,Johannesburg Central,YES
+H-516,KwaZulu Natal,Durban Harbour,true
+H-517,Northern Cape,Kimberley Hub,N/A
