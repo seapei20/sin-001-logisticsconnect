@@ -1,0 +1,40 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Independent Maven projects with no parent pom, so each is built in its own step.
+# surefire runs the JUnit 5 suite in that step, which is the point: nothing reaches
+# the remote without its tests passing.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - ingestion-service
+          - hub-service
+          - delay-stage-service
+          - transit-service
+          - alertbot
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Test ${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
+        run: mvn -B test
+
+      - name: Package ${{ matrix.module }}
+        working-directory: ${{ matrix.module }}
+        run: mvn -B package -DskipTests

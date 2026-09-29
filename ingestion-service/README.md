@@ -84,11 +84,26 @@ parsing/cleaning logic is a TODO.
 
 ## Test
 
-No automated tests yet. Manually verify it's up:
+23 JUnit 5 tests, run with:
 
 ```
-curl http://localhost:7050/health   # -> OK
+mvn test
 ```
 
-To add real tests, add JUnit 5 + the Surefire plugin to `pom.xml`, put tests under
-`src/test/java/co/wethinkcode/logisticsconnect/`, and run `mvn test`.
+| Class | Covers |
+|---|---|
+| `CsvCleanerTest` | Each cleaning rule, against the real `hubs-global.csv` and against inline fixtures for cases the shipped file does not contain |
+| `IngestionServiceAppTest` | `/health`, `/hubs`, `/hubs/{id}` over a real socket on an OS-assigned port, so the contract other services depend on is asserted as served rather than merely implemented |
+
+The HTTP tests start Javalin on port 0 so they never collide with an instance you already
+have running on 7050.
+
+Manual sanity check while the service is up:
+
+```
+curl http://localhost:7050/health      # -> OK
+curl http://localhost:7050/hubs | head -c 200
+curl http://localhost:7050/hubs/H-500
+curl http://localhost:7050/hubs/h-500  # same hub, ids are case-insensitive
+curl -i http://localhost:7050/hubs/H-999   # -> 404
+```

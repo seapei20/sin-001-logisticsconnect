@@ -28,8 +28,10 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `package-status-topic`: Package status updates move from latency-driven RPC to bandwidth-driven messaging.
 
-**Status:** scaffold only — build files, Javalin bootstrap, and TODOs are in place; no
-business logic has been implemented yet.
+**Status:** stage 1 is implemented, with a 23-test JUnit suite covering the cleaning rules
+and the REST contract. Stage 1 cleans and serves the CSV over REST (`GET /hubs`,
+`GET /hubs/{hubId}`); stages 2-4 are still scaffolds. See [DEVLOG.md](DEVLOG.md) for what was
+built and why, and [CONTRIBUTING.md](CONTRIBUTING.md) for the build-test-commit loop.
 
 ## Your task
 
@@ -80,19 +82,27 @@ duplicated into each participating service.
 ```
 logisticsconnect/
 ├── README.md
+├── CONTRIBUTING.md
 ├── .gitignore
 ├── ingestion-service/          (port 7050)
 │   ├── pom.xml
 │   ├── README.md
-│   └── src/main/
-│       ├── java/co/wethinkcode/logisticsconnect/IngestionServiceApp.java
-│       └── resources/hubs-global.csv
+│   └── src/
+│       ├── main/
+│       │   ├── java/co/wethinkcode/logisticsconnect/
+│       │   │   ├── IngestionServiceApp.java
+│       │   │   ├── CsvCleaner.java
+│       │   │   └── Hub.java
+│       │   └── resources/hubs-global.csv
+│       └── test/java/co/wethinkcode/logisticsconnect/
 ├── hub-service/          (port 7051)
 ├── delay-stage-service/          (port 7052)
 ├── transit-service/          (port 7053)
 ├── common/
 │   ├── docker-compose.yml
 │   └── README.md
+├── .github/
+│   └── workflows/build.yml      (runs mvn test on every push)
 └── alertbot/          (port 7054)
 ```
 
@@ -146,34 +156,21 @@ cd alertbot && mvn package && java -jar target/alertbot.jar
 
 ## Test
 
-No automated tests exist yet (this is a scaffold). Each running service exposes
-`/health`, so sanity-check manually:
+`ingestion-service` has a JUnit 5 suite (23 tests) covering the CSV cleaning rules and the
+REST contract. The other four modules have the test harness wired up but no tests written yet.
+
+```
+cd ingestion-service && mvn test        # one module
+find . -name pom.xml -execdir mvn -q test \;   # all five
+```
+
+Each running service also exposes `/health`, for a manual sanity check:
 
 ```
 curl http://localhost:7050/health   # -> OK
 ```
 
-To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
-
-```xml
-<dependency>
-  <groupId>org.junit.jupiter</groupId>
-  <artifactId>junit-jupiter</artifactId>
-  <version>5.10.2</version>
-  <scope>test</scope>
-</dependency>
-```
-
-```xml
-<plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <version>3.2.5</version>
-</plugin>
-```
-
-then add tests under that module's `src/test/java/...` and run:
-
-```
-mvn test
-```
+Tests run in CI on every push to `main` and every pull request — see
+[`.github/workflows/build.yml`](.github/workflows/build.yml). The working rule is that nothing
+is committed until `mvn test` passes for the module it touches; the full routine is in
+[CONTRIBUTING.md](CONTRIBUTING.md).
