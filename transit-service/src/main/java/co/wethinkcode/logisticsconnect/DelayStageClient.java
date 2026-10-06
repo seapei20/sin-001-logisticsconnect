@@ -1,0 +1,32 @@
+package co.wethinkcode.logisticsconnect;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+
+public class DelayStageClient {
+
+    private static final String DELAY_BASE = "http://localhost:7052";
+
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public DelayStage fetchStage(String hubId) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(DELAY_BASE + "/delay-stage/" + hubId))
+                .timeout(Duration.ofSeconds(5))
+                .GET()
+                .build();
+
+        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            throw new IOException("delay-stage-service returned HTTP " + response.statusCode());
+        }
+        return mapper.readValue(response.body(), DelayStage.class);
+    }
+}
