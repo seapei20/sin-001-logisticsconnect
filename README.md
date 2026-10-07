@@ -28,10 +28,10 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `package-status-topic`: Package status updates move from latency-driven RPC to bandwidth-driven messaging.
 
-**Status:** stage 1 is implemented, with a 23-test JUnit suite covering the cleaning rules
-and the REST contract. Stage 1 cleans and serves the CSV over REST (`GET /hubs`,
-`GET /hubs/{hubId}`); stages 2-4 are still scaffolds. See [DEVLOG.md](DEVLOG.md) for what was
-built and why, and [CONTRIBUTING.md](CONTRIBUTING.md) for the build-test-commit loop.
+**Status:** stages 1-3 are implemented. Stage 1 cleans and serves the CSV over REST;
+stage 2 wires the three domain services together over synchronous HTTP; stage 3 replaces
+transit-service's call to delay-stage-service with an ActiveMQ subscription. Stage 4
+(AlertBot) is still a scaffold. See [DEVLOG.md](DEVLOG.md) for what was built and why.
 
 ## Your task
 
@@ -63,7 +63,7 @@ kind of payload) is preserved.
 |---|---|---|---|
 | hub-service | ingestion-service | `GET :7050/hubs` → JSON array of cleaned hub records | hub-service loads its place-name data from the cleaned CSV output instead of re-parsing it itself |
 | transit-service | hub-service | `GET :7051/hubs/{hubId}` → hub/sorting-center details | transit-service needs hub location data to calculate an ETA |
-| transit-service | delay-stage-service | `GET :7052/delay-stage/{hubId}` → `{ "hubId": "H-501", "stage": 3 }` | transit-service needs the current delay stage to calculate an ETA — **this call is replaced by the MQ subscription in stage 3** |
+| transit-service | delay-stage-service | *removed in stage 3* — replaced by the `package-status-topic` subscription below | was the synchronous stage lookup behind `GET :7053/eta/{hubId}` |
 | (client) | delay-stage-service | `POST :7052/delay-stage/{hubId}` with a body like `{ "stage": 3 }` | the stage/state-change endpoint referenced in [common/README.md](common/README.md) — this is also where the stage-3 MQ publish happens |
 
 ### MQ (stage 3) — topic `package-status-topic`
@@ -72,37 +72,37 @@ Already documented in detail in [common/README.md](common/README.md): broker URL
 topic name come from the shared `co.wethinkcode.logisticsconnect.mq.MqConfig` class,
 duplicated into each participating service.
 
-- **Producer:** `delay-stage-service`, on its stage/state-change endpoint above.
+- **Producer:** `delay-stage-service`, on its stage/state-change endpoint above. It
+  publishes only on a real transition, and the response reports `published` so a
+  broker outage is visible to the caller rather than silent.
 - **Consumers:** `transit-service` (replacing its direct REST call to
   delay-stage-service) and, for the stretch goal, `alertbot`.
 - **Example message shape:** `{ "hubId": "H-501", "stage": 5, "timestamp": "2026-07-18T10:15:00Z" }`
+
+Because a plain topic does not replay, transit-service holds each hub's last known
+stage in memory and reads it from there. A hub with no message yet reads as stage 0, and
+a change published while transit-service is disconnected is not recovered — a durable
+topic with a persistent subscriber would close that gap. The upside is that an ETA now
+succeeds even when delay-stage-service is down, which is the decoupling stage 3 is for.
 
 ## Project structure
 
 ```
 logisticsconnect/
 ├── README.md
-├── CONTRIBUTING.md
 ├── .gitignore
 ├── ingestion-service/          (port 7050)
 │   ├── pom.xml
 │   ├── README.md
-│   └── src/
-│       ├── main/
-│       │   ├── java/co/wethinkcode/logisticsconnect/
-│       │   │   ├── IngestionServiceApp.java
-│       │   │   ├── CsvCleaner.java
-│       │   │   └── Hub.java
-│       │   └── resources/hubs-global.csv
-│       └── test/java/co/wethinkcode/logisticsconnect/
+│   └── src/main/
+│       ├── java/co/wethinkcode/logisticsconnect/IngestionServiceApp.java
+│       └── resources/hubs-global.csv
 ├── hub-service/          (port 7051)
 ├── delay-stage-service/          (port 7052)
 ├── transit-service/          (port 7053)
 ├── common/
 │   ├── docker-compose.yml
 │   └── README.md
-├── .github/
-│   └── workflows/build.yml      (runs mvn test on every push)
 └── alertbot/          (port 7054)
 ```
 
@@ -156,21 +156,34 @@ cd alertbot && mvn package && java -jar target/alertbot.jar
 
 ## Test
 
-`ingestion-service` has a JUnit 5 suite (23 tests) covering the CSV cleaning rules and the
-REST contract. The other four modules have the test harness wired up but no tests written yet.
-
-```
-cd ingestion-service && mvn test        # one module
-find . -name pom.xml -execdir mvn -q test \;   # all five
-```
-
-Each running service also exposes `/health`, for a manual sanity check:
+No automated tests exist yet (this is a scaffold). Each running service exposes
+`/health`, so sanity-check manually:
 
 ```
 curl http://localhost:7050/health   # -> OK
 ```
 
-Tests run in CI on every push to `main` and every pull request — see
-[`.github/workflows/build.yml`](.github/workflows/build.yml). The working rule is that nothing
-is committed until `mvn test` passes for the module it touches; the full routine is in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
+
+```xml
+<dependency>
+  <groupId>org.junit.jupiter</groupId>
+  <artifactId>junit-jupiter</artifactId>
+  <version>5.10.2</version>
+  <scope>test</scope>
+</dependency>
+```
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-surefire-plugin</artifactId>
+  <version>3.2.5</version>
+</plugin>
+```
+
+then add tests under that module's `src/test/java/...` and run:
+
+```
+mvn test
+```
