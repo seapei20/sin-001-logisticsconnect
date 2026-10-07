@@ -11,7 +11,7 @@ import java.util.Map;
 public class TransitServiceApp {
 
     private static final HubClient hubClient = new HubClient();
-    private static final DelayStageClient stageClient = new DelayStageClient();
+    private static final DelayStageSubscriber stageSubscriber = new DelayStageSubscriber();
 
     private static final Map<Integer, Integer> DELAY_MINUTES_BY_STAGE = Map.ofEntries(
             Map.entry(0, 0),
@@ -25,10 +25,17 @@ public class TransitServiceApp {
             Map.entry(8, 1440));
 
     public static void main(String[] args) {
+        stageSubscriber.startReconnecting();
+
         Javalin app = Javalin.create().start(7053);
 
         app.get("/health", ctx -> ctx.result("OK"));
         app.get("/eta/{hubId}", TransitServiceApp::etaForHub);
+        app.get("/delay-stages", TransitServiceApp::listKnownStages);
+    }
+
+    private static void listKnownStages(Context ctx) {
+        ctx.json(stageSubscriber.snapshot());
     }
 
     private static void etaForHub(Context ctx) {
@@ -46,14 +53,9 @@ public class TransitServiceApp {
             return;
         }
 
-        int stage;
-        try {
-            stage = stageClient.fetchStage(hubId).stage();
-        } catch (Exception e) {
-            ctx.status(502).json(Map.of("error", "delay-stage-service unavailable: " + e.getMessage()));
-            return;
-        }
-        // MQ TODO (stage 3): delay stage will arrive via MqConfig.TOPIC instead of the direct REST call above
+        // Stage 3: the stage comes from the topic subscription rather than a REST call to
+        // delay-stage-service, so an ETA no longer fails when that service is down.
+        int stage = stageSubscriber.stageFor(hubId);
 
         int baseMinutes = baseTransitMinutes(hubId);
         int delayMinutes = DELAY_MINUTES_BY_STAGE.getOrDefault(stage, 0);
