@@ -67,14 +67,89 @@ synchronous calls between them described in the root README's integration contra
 - Distinct status codes per failure mode: `404` unknown hub, `502` when either upstream is
   unreachable, so a caller can tell "no such hub" from "cannot reach hub-service".
 
-### Stage 3 seams left in place
-Both MQ integration points are marked with a `MQ TODO` comment at the exact line where the
-behaviour changes: `DelayStageServiceApp.setStage` (publish `{hubId, stage, timestamp}` on
-change) and `TransitServiceApp.etaForHub` (read the stage from the subscription instead of the
-`DelayStageClient` call). Stage 3 replaces one call and adds one publish, with no reshaping
-of the payloads.
-
 ### Verified manually
 Built all four modules and ran the stack end to end: all `/health` endpoints OK, 18 hubs
 flowing ingestion → hub-service, `GET :7053/eta/H-500` returning a stage-3 ETA of 536 minutes,
 `404` on an unknown hub, `400` on `{"stage":99}`, and case-insensitive hub lookups resolving.
+
+### Stage 3 seams left in place
+Both MQ integration points were marked with an `MQ TODO` comment at the exact line where the
+behaviour changes: `DelayStageServiceApp.setStage` (publish `{hubId, stage, timestamp}` on
+change) and `TransitServiceApp.etaForHub` (read the stage from the subscription instead of the
+`DelayStageClient` call). Stage 3 was scoped to replace one call and add one publish, with
+no reshaping of the payloads — which is what happened, next section.
+
+## Sep 29 — Stage 3: decoupling with `package-status-topic`
+
+Filled in both `MQ TODO` seams. `delay-stage-service` now broadcasts stage changes, and
+`transit-service` reads stages from a subscription rather than a REST call.
+
+### Producer — `delay-stage-service`
+- Added `PackageStatusMessage` (`hubId`, `stage`, `timestamp`) and `StagePublisher`.
+- The publisher connects lazily and holds one `Session`/`MessageProducer` on a single
+  daemon thread, so JMS objects are only touched by that one thread.
+- Publishes only on a real transition. Re-posting the stage a hub is already at returns
+  `published: false` — it would tell consumers nothing and re-stamp the timestamp.
+- The in-memory stage map stays the source of truth, so a broker outage never loses a
+  stage change. The response reports `published` so the caller can see the degradation:
+  `{"hubId":"H-500","stage":3,"previousStage":0,"published":true}`.
+- Also moved the body parse into its own `try` so a publish failure can't be misreported
+  as a `400` by the surrounding catch-all.
+
+### Consumer — `transit-service`
+- Added `DelayStageSubscriber`: subscribes to the topic and keeps each hub's last known
+  stage in a `ConcurrentHashMap`. `GET /eta/{hubId}` reads that map.
+- Deleted `DelayStageClient` and `DelayStage`. Leaving them would have kept a second,
+  unused path from transit-service to delay-stage-service and muddied the point of the
+  stage.
+- Added `GET /delay-stages` to expose the replicated cache — makes the subscription
+  observable without reading logs or the web console.
+- The `502` for an unreachable delay-stage-service is gone by design: the stage is now
+  local, so that failure mode no longer exists for ETA requests.
+
+### Reconnection: the failover transport
+`MqConfig` gained `BROKER_FAILOVER_URL`, the shared `BROKER_URL` wrapped in ActiveMQ's
+failover transport, so a client that loses the connection reconnects with backoff and
+restores its producer or subscription. Derived from `BROKER_URL` rather than replacing
+it, leaving the documented broker URL as the one source of truth.
+
+Two things this got wrong on the way, both found by testing rather than reading:
+
+1. **The subscriber never came back.** The first cut logged the connection error and
+   relied on the startup retry loop, which had already returned. Killing and restarting
+   the broker left transit-service subscribed to nothing while `delay-stage-service`
+   happily republished into the void — the cache silently froze. The failover transport
+   fixes this properly (`Successfully reconnected` → `Stage update H-500: 4 -> 7` with
+   no restart).
+2. **The failover transport made publishes hang.** `createConnection` is non-blocking,
+   but a `send` issued while the transport is disconnected waits on its reconnect lock
+   for the length of the outage — a stage-change POST blocked for the full 30s of the
+   test instead of failing. `setSendTimeout` does *not* cover that wait; the bound has
+   to be applied around the send. `StagePublisher` now runs each publish on its single
+   thread and bounds it with a 3s `Future.get`, returning `published: false` on timeout.
+   A timed-out message may still land once the broker returns, which is fine for a
+   latest-value update on a topic and is noted in the code.
+
+Kept the initial-connect retry loop in `DelayStageSubscriber`, since a cold connect still
+throws and the failover transport only takes over once a connection has been established.
+
+### Verified manually
+Built all modules and ran the full stack against the broker from `common/docker-compose.yml`:
+all `/health` endpoints OK, 18 hubs flowing ingestion → hub-service, one subscriber
+receiving a fan-out of three hubs (`H-500`→2, `H-501`→5, `H-502`→8) and computing each
+ETA from its own stage (90/480/1440 delay minutes). Failure paths checked rather than
+assumed:
+
+| Scenario | Result |
+|---|---|
+| `POST {"stage":3}` with broker up | `published: true`, transit logs `none -> 3`, ETA 536 min |
+| Re-post same stage | `published: false`, no message sent |
+| `POST {"stage":99}` / malformed body | `400`, unchanged from stage 2 |
+| Unknown hub ETA | `404` |
+| **delay-stage-service killed** | ETAs still served from the cache, incl. the stage-3 hub — the decoupling win |
+| **Broker stopped, then stage change** | `200` in ~3s with `published: false`; stage still recorded locally |
+| **Broker restarted, no service restart** | producer and subscriber reconnect automatically; next stage change reaches transit |
+
+Also confirmed the two known limits: a hub with no message yet reads as stage 0 (a plain
+topic does not replay), and a change published during an outage is not recovered. Both
+are documented on the contract rather than hidden.
