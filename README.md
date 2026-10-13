@@ -28,10 +28,11 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `package-status-topic`: Package status updates move from latency-driven RPC to bandwidth-driven messaging.
 
-**Status:** stages 1-3 are implemented. Stage 1 cleans and serves the CSV over REST;
+**Status:** all four stages are implemented. Stage 1 cleans and serves the CSV over REST;
 stage 2 wires the three domain services together over synchronous HTTP; stage 3 replaces
-transit-service's call to delay-stage-service with an ActiveMQ subscription. Stage 4
-(AlertBot) is still a scaffold. See [DEVLOG.md](DEVLOG.md) for what was built and why.
+transit-service's call to delay-stage-service with an ActiveMQ subscription; stage 4 adds
+alertbot as a second subscriber on that same topic, raising a public notice when a hub's
+delay stage crosses a threshold. See [DEVLOG.md](DEVLOG.md) for what was built and why.
 
 ## Your task
 
@@ -76,7 +77,9 @@ duplicated into each participating service.
   publishes only on a real transition, and the response reports `published` so a
   broker outage is visible to the caller rather than silent.
 - **Consumers:** `transit-service` (replacing its direct REST call to
-  delay-stage-service) and, for the stretch goal, `alertbot`.
+  delay-stage-service) and `alertbot`. Both receive the same broadcast without knowing
+  about each other — transit turns a stage into an ETA, alertbot turns it into a public
+  post when it crosses its threshold.
 - **Example message shape:** `{ "hubId": "H-501", "stage": 5, "timestamp": "2026-07-18T10:15:00Z" }`
 
 Because a plain topic does not replay, transit-service holds each hub's last known
