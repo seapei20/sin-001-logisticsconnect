@@ -10,6 +10,13 @@ public final class MqConfig {
     public static final String BROKER_URL = "tcp://localhost:61616";
     public static final String TOPIC = "package-status-topic";
 
+    /**
+     * Allows the client to reconnect if the broker connection drops.
+     */
+    public static final String BROKER_FAILOVER_URL = "failover:(" + BROKER_URL + ")"
+            + "?initialReconnectDelay=1000&maxReconnectDelay=10000&useExponentialBackOff=true";
+
     private MqConfig() {
     }
 }
+
