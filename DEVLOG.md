@@ -153,3 +153,73 @@ assumed:
 Also confirmed the two known limits: a hub with no message yet reads as stage 0 (a plain
 topic does not replay), and a change published during an outage is not recovered. Both
 are documented on the contract rather than hidden.
+
+## Sep 29 — Stage 4: alertbot as a second consumer
+
+`alertbot` is the stretch goal from the root README: a second subscriber on
+`package-status-topic` that raises a public notice when a hub's delay stage crosses a
+threshold. It is the point of the stage 3 topic having more than one consumer —
+`transit-service` turns a stage into an ETA, alertbot turns the same stage into a post,
+and neither knows the other exists.
+
+### `AlertSubscriber`
+- Copied the `DelayStageSubscriber` pattern: `MqConfig.BROKER_FAILOVER_URL`,
+  `setWatchTopicAdvisories(false)`, and a daemon startup retry loop for the cold connect.
+  The failover transport then covers a mid-run broker restart, as it does for transit.
+- Watches the stage in each message and posts when it crosses `ALERT_THRESHOLD_STAGE = 4`.
+  Stage 4 was chosen as a judgement call, not derived from anything: far enough up the
+  0-8 scale that ordinary jitter does not trip it, but not so far that a real disruption
+  goes unannounced.
+
+### Alerts fire on crossings, not on level
+The first cut posted whenever `stage >= 4`, which meant a hub climbing 4 → 5 → 6 produced
+three identical notices for one disruption. `alerting` now tracks which hubs are currently
+over the line, so a post happens on the upward crossing only, and a second one when the hub
+recovery below. A hub has to drop back under and cross again before it can post twice.
+
+The up/down decision happens inside a `ConcurrentHashMap.compute` on the stage map, rather
+than as a read followed by a write. That is the one place the concurrency actually matters:
+two messages for the same hub in flight at once could otherwise both read the same
+"previous" stage and both conclude they were the one that crossed, and the crossing would be
+missed or duplicated. `compute` runs its function under the bin lock for the key, so the
+side effect is serialized per hub. The previous stage is carried out through a one-element
+`int[]` because the lambda's return value is the *new* stage, not the old one.
+
+### `SocialPoster` — the simulated webhook
+- No network call. The value of this stage is deciding when to post, not integrating a
+  real social API, so the post is rendered as text and recorded.
+- Keeps a bounded history (last 100). A long-running instance sees a message per hub
+  transition indefinitely, and an unbounded list would be a slow leak in a service whose
+  whole job is to run forever.
+- Posts are exposed over `GET /alerts` so a verification run can be read back as JSON
+  instead of scraped out of a log. `GET /watched` mirrors transit-service's
+  `/delay-stages`, and `GET /threshold` reports the threshold and the post count.
+
+### Verified manually
+Built and ran the full five-service stack against the broker. Both consumers receive the
+same broadcast and react independently:
+
+| Scenario | Result |
+|---|---|
+| stage 0 → 2 → 3 (under threshold) | transit updates, `/alerts` empty |
+| 3 → 5 (crosses 4) | one post, `crossed alert threshold 4` |
+| 5 → 6 (stays over) | no second post — the reason for tracking crossings |
+| 6 → 1 (recovers) | second post, `recovered below alert threshold 4` |
+| Three hubs pushed to 6 | three posts; transit's `/delay-stages` and alertbot's `/watched` agree |
+| `POST {"stage":99}` / malformed body | `400`, no post — validation unchanged from stage 2 |
+| **delay-stage-service killed** | ETAs still served, alertbot still subscribed — neither consumer needs the producer up |
+| **Broker stopped, then stage change** | `200` in 3.1s with `published: false`; stage recorded locally, alertbot correctly did *not* post |
+| **Broker restarted, no restart** | both consumers reconnected on the failover transport; the next stage change reached transit and posted an alert |
+
+The broker-outage row is the one worth reading twice: alertbot not posting is correct, not
+a bug. The change never reached the topic, and a plain topic does not replay — the same
+limit documented in stage 3, now visible from the consumer that depends on it. A durable
+topic with persistent subscribers is what would close it, and both consumers would need it.
+
+### Not done
+- No automated tests, consistent with the rest of the repo. `AlertSubscriber` and
+  `SocialPoster` are both constructible without a broker, so the crossing logic and the
+  bounded history are testable directly by feeding messages in; that is the obvious next
+  step if this is picked up again.
+- `SocialPoster` does no retry or backoff. A real webhook would need both, plus a dead
+  letter path for posts that keep failing.
