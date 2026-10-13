@@ -10,7 +10,7 @@ Part of the [LogisticsConnect](../README.md) project. Holds the ActiveMQ broker 
 by the services below — not a service itself, so it has no port of its own.
 
 - Producer: `delay-stage-service` (`../delay-stage-service`)
-- Consumer(s): `transit-service` (required, stage 3); `alertbot` (stretch, stage 4 —
+- Consumer(s): `transit-service` (required, stage 3) and `alertbot` (stretch, stage 4 —
   reacts to stage changes to decide when to raise an alert)
 
 Broker URL and topic name are shared via a common `co.wethinkcode.logisticsconnect.mq.MqConfig` class
@@ -67,7 +67,7 @@ Once the TODOs below are implemented, verify end-to-end by publishing a message 
 watching the topic in the web console.
 
 ```
-# a stage change is broadcast, and transit-service logs the update it received
+# a stage change is broadcast, and both consumers receive it independently
 curl -X POST http://localhost:7052/delay-stage/H-500 \
   -H 'Content-Type: application/json' -d '{"stage":3}'
 # -> {"hubId":"H-500","stage":3,"previousStage":0,"published":true}
@@ -78,6 +78,18 @@ curl http://localhost:7053/delay-stages
 
 # and the ETA it now computes from that stage
 curl http://localhost:7053/eta/H-500
+
+# the same message is also what alertbot watches. At stage 3 it is under its
+# threshold of 4, so nothing is posted:
+curl http://localhost:7054/alerts
+# -> []
+
+# push the stage past alertbot's threshold and both consumers react from the
+# same broadcast, with neither calling the other
+curl -X POST http://localhost:7052/delay-stage/H-500 \
+  -H 'Content-Type: application/json' -d '{"stage":5}'
+curl http://localhost:7054/alerts
+# -> [{"hubId":"H-500","stage":5,"previousStage":3,"reason":"crossed alert threshold 4", ...}]
 ```
 
 ## TODO
@@ -85,6 +97,6 @@ curl http://localhost:7053/eta/H-500
 - ~~Add `activemq-client` publish logic to `delay-stage-service` on its stage/state-change endpoint.~~ Done — see `StagePublisher`.
 - ~~Add `activemq-client` subscriber logic to consumer service(s) above, replacing any
   direct synchronous calls to `delay-stage-service`.~~ Done for `transit-service` — see `DelayStageSubscriber`.
-- `alertbot` (stretch goal) still needs its own subscriber logic — its `pom.xml`
-  already has the `activemq-client` dependency and it can copy the `DelayStageSubscriber`
-  pattern from `transit-service`.
+- ~~Add `activemq-client` subscriber logic to consumer service(s) above, replacing any
+  direct synchronous calls to `delay-stage-service`.~~ Done for both — see
+  `DelayStageSubscriber` in `transit-service` and `AlertSubscriber` in `alertbot`.
