@@ -34,22 +34,20 @@ transit-service's call to delay-stage-service with an ActiveMQ subscription; sta
 alertbot as a second subscriber on that same topic, raising a public notice when a hub's
 delay stage crosses a threshold. See [DEVLOG.md](DEVLOG.md) for what was built and why.
 
-## Your task
+## Implementation Summary
 
-Implement the four stages below, in order — each one builds on the last, and the
-later stages assume the earlier ones work. Stage 1-3 are required; stage 4 is a
-stretch goal if you have time left.
+LogisticsConnect is implemented in four stages:
 
-| Stage | Required? | What "done" looks like | Rough effort |
-|---|---|---|---|
-| 1. Clean `hubs-global.csv` | Required | IngestionServiceApp exposes the cleaned records via REST (see [Integration contracts](#integration-contracts)); every issue category in [ingestion-service/README.md](ingestion-service/README.md#known-data-issues) is handled | ~1-1.5h |
-| 2. Wire up the REST services | Required | hub-service, delay-stage-service, and transit-service each expose real domain endpoints (not just `/health`) and call each other synchronously per the contracts below; `transit-service` can return an ETA for a hub | ~1.5-2h |
-| 3. Decouple with the MQ topic | Required | `delay-stage-service` publishes to `package-status-topic` on stage change; `transit-service` subscribes instead of calling `delay-stage-service` directly; broker runs via `common/docker-compose.yml` | ~1h |
-| 4. AlertBot | Stretch | `alertbot` subscribes to `package-status-topic` and simulates posting an alert when a hub's delay stage crosses a threshold you choose | ~30-45m |
+| Stage | Implementation | Purpose |
+|---|---|---|
+| 1. Data ingestion | `ingestion-service` | Cleans hub data from the CSV file and exposes it through REST endpoints. |
+| 2. REST integration | `hub-service`, `delay-stage-service`, `transit-service` | Connects services through HTTP requests and calculates estimated arrival times. |
+| 3. Message-based updates | `delay-stage-service`, `transit-service` | Publishes delay-stage changes to the ActiveMQ `package-status-topic`; transit subscribes to updates rather than making a direct delay-stage request. |
+| 4. Alert notifications | `alertbot` | Subscribes to the same topic and records simulated public alerts when delay stages meet its configured threshold. |
 
-You don't need to match any exact field names, endpoint paths, or message shapes —
-the ones below are illustrative. Favor a working, readable implementation over a
-gold-plated one; partial completion of stage 3 or 4 is fine if 1-2 are solid.
+The services run independently on their own ports. ActiveMQ provides the messaging connection between the publisher and subscribers.
+
+See [DEVLOG.md](DEVLOG.md) for development notes and design decisions.
 
 ## Integration contracts
 
@@ -157,36 +155,141 @@ cd alertbot && mvn package && java -jar target/alertbot.jar
 | TransitServiceApp (`transit-service`) | 7053 |
 | AlertBotApp (`alertbot`) | 7054 |
 
-## Test
+## Testing
 
-No automated tests exist yet (this is a scaffold). Each running service exposes
-`/health`, so sanity-check manually:
+Run each command from the project root to test an individual service.
 
-```
-curl http://localhost:7050/health   # -> OK
-```
+### Ingestion service
 
-To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
-
-```xml
-<dependency>
-  <groupId>org.junit.jupiter</groupId>
-  <artifactId>junit-jupiter</artifactId>
-  <version>5.10.2</version>
-  <scope>test</scope>
-</dependency>
+```bash
+cd ingestion-service && mvn test
 ```
 
-```xml
-<plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <version>3.2.5</version>
-</plugin>
+The ingestion service previously passed 23 tests with no failures or errors.
+
+### Other services
+
+Run each command separately, returning to the project root between commands:
+
+```bash
+cd hub-service && mvn test
 ```
 
-then add tests under that module's `src/test/java/...` and run:
+```bash
+cd delay-stage-service && mvn test
+```
 
+```bash
+cd transit-service && mvn test
 ```
-mvn test
+
+```bash
+cd alertbot && mvn test
 ```
+
+Check the Maven summary for the actual result of each module.
+
+## API Demo
+
+Start ActiveMQ before starting the services:
+
+```bash
+docker compose -f common/docker-compose.yml up -d
+docker ps
+```
+
+Start each service in its own terminal. Run these commands from the project root, one service per terminal:
+
+```bash
+cd ingestion-service && mvn package && java -jar target/ingestion-service.jar
+```
+
+```bash
+cd hub-service && mvn package && java -jar target/hub-service.jar
+```
+
+```bash
+cd delay-stage-service && mvn package && java -jar target/delay-stage-service.jar
+```
+
+```bash
+cd transit-service && mvn package && java -jar target/transit-service.jar
+```
+
+```bash
+cd alertbot && mvn package && java -jar target/alertbot.jar
+```
+
+Keep each terminal open while its service runs. If a port is already in use, check whether that service is already running before starting another instance.
+
+### Check the endpoints
+
+Run these requests from a separate terminal:
+
+**Ingestion service — port 7050**
+
+```bash
+curl http://localhost:7050/health
+curl http://localhost:7050/hubs
+curl http://localhost:7050/hubs/H-500
+```
+
+**Hub service — port 7051**
+
+```bash
+curl http://localhost:7051/health
+curl http://localhost:7051/hubs
+curl http://localhost:7051/hubs/H-500
+```
+
+**Delay-stage service — port 7052**
+
+```bash
+curl http://localhost:7052/health
+curl http://localhost:7052/delay-stage
+curl http://localhost:7052/delay-stage/H-500
+```
+
+Send a stage update to test the publisher/subscriber flow:
+
+```bash
+curl -X POST http://localhost:7052/delay-stage/H-500 \
+  -H 'Content-Type: application/json' \
+  -d '{"stage":3}'
+```
+
+**Transit service — port 7053**
+
+```bash
+curl http://localhost:7053/health
+curl http://localhost:7053/eta/H-500
+curl http://localhost:7053/delay-stages
+```
+
+**AlertBot — port 7054**
+
+```bash
+curl http://localhost:7054/health
+curl http://localhost:7054/alerts
+curl http://localhost:7054/watched
+curl http://localhost:7054/threshold
+```
+
+The exact responses depend on the running application and its data. Use them to verify the actual behaviour during your demo.
+
+### ActiveMQ
+
+The ActiveMQ web console is available at:
+
+http://localhost:8161
+
+The OpenWire messaging port is `61616`.
+
+## Stage 3 and Stage 4 Notes
+
+- The delay-stage service publishes stage updates to the `package-status-topic` topic.
+- The transit service and AlertBot subscribe to that topic.
+- Transit maintains an in-memory cache of received stages for ETA calculations.
+- AlertBot checks received updates against its configured threshold and records alerts.
+- AlertBot simulates public notifications; this does not mean that real public messaging services are contacted.
+- Because the stage cache is in memory, updates missed while a subscriber is disconnected may not be recovered automatically.
