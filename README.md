@@ -293,3 +293,7 @@ The OpenWire messaging port is `61616`.
 - AlertBot checks received updates against its configured threshold and records alerts.
 - AlertBot simulates public notifications; this does not mean that real public messaging services are contacted.
 - Because the stage cache is in memory, updates missed while a subscriber is disconnected may not be recovered automatically.
+
+Verification_code
+WTC-JQWR56CF
+
