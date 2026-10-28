@@ -17,13 +17,13 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
    direct calls — shared broker setup lives in [`common/`](common)
 4. raise the alarm on failure — handled by **AlertBotApp**
 
-| Service | Folder | Port | Role |
-|---|---|---|---|
-| IngestionServiceApp | [`ingestion-service/`](ingestion-service) | 7050 | Parses and cleans `hubs-global.csv` |
-| HubServiceApp | [`hub-service/`](hub-service) | 7051 | Serves provinces and sorting centers (place-name source of truth). |
+| Service | Folder                                        | Port | Role |
+|---|-----------------------------------------------|---|---|
+| IngestionServiceApp | [`ingestion-service/`](ingestion-service)     | 7050 | Parses and cleans `hubs-global.csv` |
+| HubServiceApp | [`hub-service/`](hub-service)                 | 7051 | Serves provinces and sorting centers (place-name source of truth). |
 | DelayStageServiceApp | [`delay-stage-service/`](delay-stage-service) | 7052 | Tracks the Transit Delay Stage (0-8, e.g. weather shutdowns). |
-| TransitServiceApp | [`transit-service/`](transit-service) | 7053 | Calculates estimated arrival windows based on hub and delay stage. |
-| AlertBotApp | [`alertbot/`](alertbot) | 7054 | posts proactive delay notifications to public transit social media pages (simulated). |
+| TransitServiceApp | [`transit-service/`](transit-service)         | 7053 | Calculates estimated arrival windows based on hub and delay stage. |
+| AlertBotApp | [`alertbot/`](alertbot)                       | 7054 | posts proactive delay notifications to public transit social media pages (simulated). |
 
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `package-status-topic`: Package status updates move from latency-driven RPC to bandwidth-driven messaging.
